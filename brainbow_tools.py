@@ -1,3 +1,24 @@
+# FILE : brainbow_tools.py
+
+"""
+MODULE FOR BRAINBOW IMAGE PROCESSING
+
+This module provides functions to process Brainbow images, including:
+- Extracting cell data from images and masks
+- Classifying cells by color based on RGB thresholds
+- Analyzing cellular clones (groups of adjacent same-colored cells)
+- Generating visualizations and analysis outputs
+
+Key Functions:
+- extract_data_image: Extracts cell properties from a Brainbow image and its mask
+- convert_area_to_microns: Converts cell areas from pixels to square micrometers
+- process_brainbow_image: Main function for processing a single Brainbow image (color classification, clone analysis, etc.)
+- Various plotting functions for visualization
+
+Note: This module is used by main.py for batch processing.
+"""
+
+
 import numpy as np 
 import os
 from skimage import io, measure, morphology, filters, exposure
