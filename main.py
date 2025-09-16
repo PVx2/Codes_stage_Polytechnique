@@ -1,3 +1,64 @@
+# FILE : main.py
+
+# USE :
+# 1. Put the Brainbow images and their masks in a folder Placer les images Brainbow et les masques dans une structure de dossiers
+# 2. Modify the input/output paths in __main__
+# 3. Execut main.py
+
+"""
+MAIN SCRIPT FOR BATCH PROCESSING OF BRAINBOW IMAGES
+
+This script processes Brainbow images and their corresponding mask files to analyze:
+- Cell colors (8 possible colors: Red, Green, Blue, Yellow, Magenta, Cyan, White, Black)
+- Clone sizes (groups of adjacent same-colored cells)
+- Cell distributions and orientations
+
+INPUT FILE ORGANIZATION:
+- The input folder should contain:
+  - Brainbow images: TIFF files named with patterns like "LocZP_*.tif" or "CORR_LocZP_*.tif"
+  - Mask images: TIFF files named with patterns like "masque_*.tif"
+  - Optional: Excel files with manual measurements for comparison (named with patterns that match the image names)
+
+- The script will recursively search for image/mask pairs in the input folder and its subfolders
+
+PROCESSING STEPS:
+1. Find all image/mask pairs using filename patterns
+2. For each pair:
+   a. Extract cell data (area, centroid, intensity) and save to a temporary CSV
+   b. Convert area from pixels to micrometers
+   c. Classify cells into one of 8 colors based on RGB thresholds
+   d. Merge adjacent cells of the same color into clones
+   e. Generate plots and analysis for the image
+3. Aggregate results from all images into a combined Excel file and PDF report
+
+OUTPUTS:
+After running the script, the output folder will contain:
+
+FOR EACH IMAGE:
+- A CSV file with cell measurements in micrometers (e.g., "[image_name]_um.csv")
+- Color masks (TIFF images) for each color category in a "[image_name]_color_masks" subfolder
+- An Excel file with clone analysis (region properties) in the color masks folder
+- Various plots (PDF and PNG) showing:
+  - Cell size distribution
+  - Color distribution by area
+  - Maxwell triangle projection of colors
+  - Clone size distribution per color
+  - Clone orientation analysis
+  - Color frequency vs. clone size relationships
+
+AGGREGATED ACROSS ALL IMAGES:
+- combined_results.xlsx: Combined data from all processed images
+- all_plots.pdf: PDF containing all generated plots
+- Additional aggregated analysis files for:
+  - Clone size evolution across time points
+  - Clone orientation aggregation
+  - Color frequency vs. clone size relationships
+  - Clone size distribution per color
+  - Percentage of cells in clone bins per color
+
+Note: The script uses the brainbow_tools module for image processing functions.
+"""
+
 import os
 from glob import glob
 import re
@@ -15,6 +76,11 @@ from brainbow_tools import extract_data_image, convert_area_to_microns, plot_cel
 
 
 def find_image_mask_pairs(folder_path):
+    """
+    IMAGE/MASK CORRELATION: Recursively searches the folder to find matching Brainbow image (.tif) and binary mask (.tif) pairs.
+    Uses filename-based matching logic.
+    """
+    
     # Include CORR files in search
     brainbow_files = glob(os.path.join(folder_path, "LocZP_*.tif")) + \
                      glob(os.path.join(folder_path, "CORR_LocZP_*.tif"))
@@ -276,6 +342,11 @@ def find_matching_excel_file(image_path, input_folder):
 
 
 def process_folder(input_folder, output_folder):
+    """
+    PROCESSING A COMPLETE FOLDER: Orchestrates the processing of all found image/mask pairs.
+    Generates outputs in an organized structure.
+    """
+    
     os.makedirs(output_folder, exist_ok=True)
     pairs = find_image_mask_pairs(input_folder)
     if not pairs:
