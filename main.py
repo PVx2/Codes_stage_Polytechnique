@@ -1,7 +1,7 @@
 # FILE : main.py
 
 # USE :
-# 1. Put the Brainbow images and their masks in a folder Placer les images Brainbow et les masques dans une structure de dossiers
+# 1. Put the Brainbow images and their masks in a folder
 # 2. Modify the input/output paths in __main__
 # 3. Execut main.py
 
@@ -1186,3 +1186,4 @@ if __name__ == '__main__':
     input_root = r'C:\Users\33672\Documents\Stage X\test'
     output_root = r'C:\Users\33672\Documents\Stage X\test'
     process_root_folder(input_root, output_root)
+
