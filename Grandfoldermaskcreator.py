@@ -1,16 +1,16 @@
-# SCRIPT: Grandfoldermaskcreator.py
+# FILE : Grandfoldermaskcreator.py
 
 """
-OBJECTIF: Générer automatiquement des masques à partir de fichiers ROI ImageJ
-          Les masques sont créés avec les mêmes dimensions que les images correspondantes
-          et sauvegardés au format TIFF avec un fond blanc, les ROI en noir et leurs contours en blanc.
+OBJECTIVE: Automatically generate masks from ImageJ ROI files  
+           The masks are created with the same dimensions as the corresponding images  
+           and saved in TIFF format with a white background, ROIs in black, and their contours in white.  
 
-FONCTIONNEMENT:
-1. Parcourt récursivement l'arborescence à la recherche de fichiers ROI (.zip)
-2. Pour chaque ROI, trouve l'image correspondante par matching de nom
-3. Crée un masque aux dimensions exactes de l'image
-4. Dessine les régions d'intérêt avec leurs contours
-5. Sauvegarde le masque dans le même dossier que l'image
+WORKFLOW:  
+1. Recursively browse the directory tree for ROI files (.zip)  
+2. For each ROI, find the corresponding image by name matching  
+3. Create a mask with the exact dimensions of the image  
+4. Draw the regions of interest with their contours  
+5. Save the mask in the same folder as the image  
 
 """
 
@@ -241,4 +241,5 @@ for dirpath, dirnames, filenames in os.walk(root_dir):
             print(f"   └─ ROI common name: {extract_common_name_from_roi(zip_file)}")
             print()
             
+
 print(f"🎉 Processing complete! Generated {processed_count} masks with exact image dimensions.")
