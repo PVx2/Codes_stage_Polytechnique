@@ -1,64 +1,3 @@
-# FILE : main.py
-
-# USE :
-# 1. Put the Brainbow images and their masks in a folder
-# 2. Modify the input/output paths in __main__
-# 3. Execut main.py
-
-"""
-MAIN SCRIPT FOR BATCH PROCESSING OF BRAINBOW IMAGES
-
-This script processes Brainbow images and their corresponding mask files to analyze:
-- Cell colors (8 possible colors: Red, Green, Blue, Yellow, Magenta, Cyan, White, Black)
-- Clone sizes (groups of adjacent same-colored cells)
-- Cell distributions and orientations
-
-INPUT FILE ORGANIZATION:
-- The input folder should contain:
-  - Brainbow images: TIFF files named with patterns like "LocZP_*.tif" or "CORR_LocZP_*.tif"
-  - Mask images: TIFF files named with patterns like "masque_*.tif"
-  - Optional: Excel files with manual measurements for comparison (named with patterns that match the image names)
-
-- The script will recursively search for image/mask pairs in the input folder and its subfolders
-
-PROCESSING STEPS:
-1. Find all image/mask pairs using filename patterns
-2. For each pair:
-   a. Extract cell data (area, centroid, intensity) and save to a temporary CSV
-   b. Convert area from pixels to micrometers
-   c. Classify cells into one of 8 colors based on RGB thresholds
-   d. Merge adjacent cells of the same color into clones
-   e. Generate plots and analysis for the image
-3. Aggregate results from all images into a combined Excel file and PDF report
-
-OUTPUTS:
-After running the script, the output folder will contain:
-
-FOR EACH IMAGE:
-- A CSV file with cell measurements in micrometers (e.g., "[image_name]_um.csv")
-- Color masks (TIFF images) for each color category in a "[image_name]_color_masks" subfolder
-- An Excel file with clone analysis (region properties) in the color masks folder
-- Various plots (PDF and PNG) showing:
-  - Cell size distribution
-  - Color distribution by area
-  - Maxwell triangle projection of colors
-  - Clone size distribution per color
-  - Clone orientation analysis
-  - Color frequency vs. clone size relationships
-
-AGGREGATED ACROSS ALL IMAGES:
-- combined_results.xlsx: Combined data from all processed images
-- all_plots.pdf: PDF containing all generated plots
-- Additional aggregated analysis files for:
-  - Clone size evolution across time points
-  - Clone orientation aggregation
-  - Color frequency vs. clone size relationships
-  - Clone size distribution per color
-  - Percentage of cells in clone bins per color
-
-Note: The script uses the brainbow_tools module for image processing functions.
-"""
-
 import os
 from glob import glob
 import re
@@ -72,7 +11,7 @@ from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 import brainbow_tools
 from matplotlib.backends.backend_pdf import PdfPages
-from brainbow_tools import extract_data_image, convert_area_to_microns, plot_cell_size_distribution, plot_color_distribution_by_area, plot_maxwell_triangle_projection, process_brainbow_image, display_images_and_masks
+from brainbow_tools import extract_data_image, convert_area_to_microns, plot_cell_size_distribution, plot_color_distribution_by_area, process_brainbow_image, display_images_and_masks
 
 
 def find_image_mask_pairs(folder_path):
@@ -388,7 +327,6 @@ def process_folder(input_folder, output_folder):
                     print(f"Massive cells analysis available: {os.path.basename(regionprops_excel)}")
 
                 plot_color_distribution_by_area(df_colors, pdf=pdf, base_name=short_name)
-                plot_maxwell_triangle_projection(df_colors, pdf=pdf, base_name=short_name)
 
                 cols_to_drop = ['area_bin', 'r_norm', 'g_norm', 'b_norm']
                 existing_cols = [col for col in cols_to_drop if col in df_colors.columns]
@@ -1186,4 +1124,3 @@ if __name__ == '__main__':
     input_root = r'C:\Users\33672\Documents\Stage X\test'
     output_root = r'C:\Users\33672\Documents\Stage X\test'
     process_root_folder(input_root, output_root)
-

@@ -1,24 +1,3 @@
-# FILE : brainbow_tools.py
-
-"""
-MODULE FOR BRAINBOW IMAGE PROCESSING
-
-This module provides functions to process Brainbow images, including:
-- Extracting cell data from images and masks
-- Classifying cells by color based on RGB thresholds
-- Analyzing cellular clones (groups of adjacent same-colored cells)
-- Generating visualizations and analysis outputs
-
-Key Functions:
-- extract_data_image: Extracts cell properties from a Brainbow image and its mask
-- convert_area_to_microns: Converts cell areas from pixels to square micrometers
-- process_brainbow_image: Main function for processing a single Brainbow image (color classification, clone analysis, etc.)
-- Various plotting functions for visualization
-
-Note: This module is used by main.py for batch processing.
-"""
-
-
 import numpy as np 
 import os
 from skimage import io, measure, morphology, filters, exposure
@@ -29,7 +8,132 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import sys
 from skimage.segmentation import find_boundaries
+from sklearn.cluster import Birch
+from scipy import stats
+import warnings
+warnings.filterwarnings('ignore')
 
+def rgb_to_maxwell_triangle(r, g, b):
+    """
+    Convert RGB values to Maxwell triangle coordinates.
+    Handles both scalar and array inputs correctly.
+    """
+    total = r + g + b
+    
+    # Handle both scalar and array cases
+    if np.isscalar(total):
+        if total == 0:
+            return 0.0, 0.0
+    else:
+        # For arrays, create masks for zero totals
+        zero_mask = total == 0
+        non_zero_mask = ~zero_mask
+    
+    # Initialize normalized values
+    r_norm = np.zeros_like(r, dtype=float)
+    g_norm = np.zeros_like(g, dtype=float)
+    b_norm = np.zeros_like(b, dtype=float)
+    
+    # Calculate normalized values only for non-zero totals
+    if np.isscalar(total):
+        r_norm = r / total
+        g_norm = g / total
+        b_norm = b / total
+    else:
+        r_norm[non_zero_mask] = r[non_zero_mask] / total[non_zero_mask]
+        g_norm[non_zero_mask] = g[non_zero_mask] / total[non_zero_mask]
+        b_norm[non_zero_mask] = b[non_zero_mask] / total[non_zero_mask]
+    
+    # Convert to Maxwell triangle coordinates
+    x = 0.5 * (2 * g_norm + r_norm)
+    y = (np.sqrt(3) / 2) * r_norm
+    
+    return x, y
+
+def create_maxwell_triangle(points, point_alpha=1, point_size=5, unmixing_triangle=None, ax=None):
+    """
+    Create a Maxwell triangle plot.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 8))
+    
+    if unmixing_triangle is not None:
+        # Plot unmixing triangle
+        triangle_vertices = np.array([[0, 0], [1, 0], [0.5, np.sqrt(3)/2]])
+        transformed_vertices = np.dot(unmixing_triangle, triangle_vertices.T).T
+        triangle = patches.Polygon(transformed_vertices, fill=False, edgecolor='red', linewidth=2)
+        ax.add_patch(triangle)
+    
+    # Plot points
+    ax.scatter(points[:, 0], points[:, 1], alpha=point_alpha, s=point_size)
+    
+    # Set triangle boundaries
+    ax.plot([0, 0.5], [0, np.sqrt(3)/2], 'k-')
+    ax.plot([0.5, 1], [np.sqrt(3)/2, 0], 'k-')
+    ax.plot([1, 0], [0, 0], 'k-')
+    
+    ax.set_xlim(-0.1, 1.1)
+    ax.set_ylim(-0.1, 0.95)
+    ax.set_aspect('equal')
+    ax.axis('off')
+    
+    return ax
+
+def unmix_rgb(rgb_values):
+    """
+    Unmix RGB values using matrix inversion.
+    """
+    # Create ideal color matrix (RGB for pure colors)
+    ideal_colors = np.array([
+        [1, 0, 0],  # Red
+        [0, 1, 0],  # Green
+        [0, 0, 1]   # Blue
+    ])
+    
+    # Calculate unmixing matrix
+    unmixing_matrix = np.linalg.inv(ideal_colors)
+    
+    # Apply unmixing
+    unmixed = np.dot(unmixing_matrix, rgb_values.T).T
+    
+    # Ensure no negative values
+    unmixed[unmixed < 0] = 0
+    
+    return unmixed, unmixing_matrix
+
+def normalisation_canal_per_quantile(data, lower_percentages, upper_percentages, channel_axis=1, clip=True, return_quantiles=False, skew_norm=None):
+    """
+    Normalize data by channel using quantiles.
+    """
+    if skew_norm is None:
+        skew_norm = [0, 0]
+    
+    normalized_data = np.zeros_like(data)
+    quantiles = []
+    
+    for i in range(data.shape[channel_axis]):
+        channel_data = data[:, i] if channel_axis == 1 else data[i, :]
+        
+        # Calculate quantiles
+        lower_q = np.percentile(channel_data, lower_percentages)
+        upper_q = np.percentile(channel_data, upper_percentages[i] if hasattr(upper_percentages, '__iter__') else upper_percentages)
+        
+        quantiles.append((lower_q, upper_q))
+        
+        # Normalize channel
+        channel_norm = (channel_data - lower_q) / (upper_q - lower_q)
+        
+        if clip:
+            channel_norm = np.clip(channel_norm, 0, 1)
+        
+        if channel_axis == 1:
+            normalized_data[:, i] = channel_norm
+        else:
+            normalized_data[i, :] = channel_norm
+    
+    if return_quantiles:
+        return normalized_data, quantiles
+    return normalized_data
 
 def extract_data_image(brainbow_path, label_mask_path, output_csv_path):
     """
@@ -69,8 +173,6 @@ def extract_data_image(brainbow_path, label_mask_path, output_csv_path):
     
     return df
 
-
-
 def convert_area_to_microns(input_csv_path, output_csv_path):
     """
     Converts the 'area' column in a CSV file from pixel^2 to microns^2.
@@ -98,7 +200,6 @@ def convert_area_to_microns(input_csv_path, output_csv_path):
     print(f"Done! 'area' column now in µm². File saved as '{output_csv_path}'")
 
     return df
-
 
 def plot_cell_size_distribution(df, area_col='area', bin_edges=None, title='Cell Size Distribution', base_name=None, pdf=None):
     """
@@ -149,7 +250,6 @@ def plot_cell_size_distribution(df, area_col='area', bin_edges=None, title='Cell
         plt.close(fig)
     else:
         plt.show()
-        
         
 def plot_clone_size_distribution_per_color(massive_df, color, output_folder, base_name=None):
     """
@@ -219,7 +319,6 @@ def plot_clone_size_distribution_per_color(massive_df, color, output_folder, bas
     print(f"Saved clone size distribution for {color}: {plot_path}")
     return plot_path
 
-
 def plot_percentage_cells_in_clone_bins_per_color(regionprops_excel_path, output_folder, base_name=None):
     """
     Plots the percentage of cells that fall into each clone size bin for each color separately.
@@ -267,7 +366,7 @@ def plot_percentage_cells_in_clone_bins_per_color(regionprops_excel_path, output
         for color in color_categories:
             sheet_name = f"{color}_Massive_Cells"
             if sheet_name in xls.sheet_names:
-                df = pd.read_excel(xls, sheet_name=sheet_name)
+                df = pd.read_excel(xls, sheet_name)
                 if not df.empty and 'individual_cells_count' in df.columns:
                     # For each clone, add its cell count to the appropriate bin
                     for _, row in df.iterrows():
@@ -350,297 +449,162 @@ def process_brainbow_image(brainbow_path, label_mask_path, output_csv_path, base
 
     # Create a binary mask (True where cell, False otherwise)
     binary_mask = (label_mask == 0)
-
-    # Erode the mask slightly for better thresholding
-    eroded_mask = morphology.binary_erosion(binary_mask, morphology.disk(3))
-
+    
     # Label the binary mask for regionprops extraction
     labeled_cells = measure.label(binary_mask)
 
     # Extract region properties from labeled cells and the Brainbow image
     df = pd.read_csv(output_csv_path)  # Assuming this CSV contains previously extracted data
 
-    # Extract pixel intensities for each channel
-    red_pixels = brainbow[:, :, 0][eroded_mask]
-    green_pixels = brainbow[:, :, 1][eroded_mask]
-    blue_pixels = brainbow[:, :, 2][eroded_mask]
-
-    # Compute Li's threshold for each channel
-    red_thresh = filters.threshold_li(red_pixels)
-    green_thresh = filters.threshold_li(green_pixels)
-    blue_thresh = filters.threshold_li(blue_pixels)
-
-    # Calculate maximum intensities for each channel
-    red_max = np.max(red_pixels)
-    green_max = np.max(green_pixels)
-    blue_max = np.max(blue_pixels)
-
-    # Calculate threshold as percentage of max intensity
-    red_thresh_pct = (red_thresh / red_max) * 100
-    green_thresh_pct = (green_thresh / green_max) * 100
-    blue_thresh_pct = (blue_thresh / blue_max) * 100
-
-    print(f"Li's Thresholds on Eroded Mask - R: {red_thresh:.1f}, G: {green_thresh:.1f}, B: {blue_thresh:.1f}")
-    print(f"Max Intensities - R: {red_max:.1f}, G: {green_max:.1f}, B: {blue_max:.1f}")
-    print(f"Thresholds as % of Max - R: {red_thresh_pct:.1f}%, G: {green_thresh_pct:.1f}%, B: {blue_thresh_pct:.1f}%")
-
-    # Plot histograms with thresholds
-    fig_thresh = plt.figure(figsize=(18, 6))  # Increased height to accommodate the new line
+    # Extract pixel intensities for each cell
+    red_intensities = df['mean_intensity-0'].values
+    green_intensities = df['mean_intensity-1'].values
+    blue_intensities = df['mean_intensity-2'].values
     
-    for i, (pixels, color, thresh, max_val, thresh_pct) in enumerate(zip(
-        [red_pixels, green_pixels, blue_pixels],
-        ['Red', 'Green', 'Blue'],
-        [red_thresh, green_thresh, blue_thresh],
-        [red_max, green_max, blue_max],
-        [red_thresh_pct, green_thresh_pct, blue_thresh_pct]
-    )):
-        plt.subplot(2, 4, i+1)  # Changed to 2 rows, 4 columns
-        plt.hist(pixels, bins=50, color=color.lower(), alpha=0.7)
-        plt.axvline(thresh, color='k', linestyle='--')
-        plt.title(f"{color} Channel (Threshold: {thresh:.1f})")
-        plt.ylabel('Frequency')
-        
-        # Add subplot for percentage values below each histogram
-        plt.subplot(2, 4, i+5)  # Second row
-        plt.text(0.5, 0.5, f"Max: {max_val:.1f}\nThreshold: {thresh_pct:.1f}% of Max", 
-                ha='center', va='center', fontsize=12, 
-                bbox=dict(boxstyle="round,pad=0.3", facecolor=color.lower(), alpha=0.2))
-        plt.xlim(0, 1)
-        plt.ylim(0, 1)
-        plt.axis('off')
-
-    # Extract data from Excel file and create a table in the plot
-    if excel_path:
-        try:
-            excel_data = pd.read_excel(excel_path, engine='openpyxl', sheet_name='RGBint_STATs')
-            data_to_display = excel_data.iloc[1:4, 5:8]  # Rows 2 to 5 and columns E to H
-            
-            # Check if we have NaNs in the third row (% of MAX)
-            if data_to_display.iloc[2].isna().all():
-                # If % of MAX is all NaNs, check if the second row is actually % of MAX (float values between 0 and 1)
-                if all(0 <= x <= 1 for x in data_to_display.iloc[1] if not pd.isna(x)):
-                    # Format the second row as percentages with 2 decimal places
-                    data_to_display.iloc[1] = data_to_display.iloc[1].apply(lambda x: round(x, 2) if not pd.isna(x) else x)
-                    # Drop the third row (all NaNs)
-                    data_to_display = data_to_display.iloc[:2]
-                else:
-                    # If second row isn't percentages, keep original data but format MAX values
-                    data_to_display.iloc[1] = data_to_display.iloc[1].apply(lambda x: round(x, 1) if not pd.isna(x) else x)
-            else:
-                # Format all rows appropriately
-                data_to_display.iloc[1] = data_to_display.iloc[1].apply(lambda x: round(x, 1) if not pd.isna(x) else x)  # MAX values
-                data_to_display.iloc[2] = data_to_display.iloc[2].apply(lambda x: round(x, 2) if not pd.isna(x) else x)  #% of MAX
-            
-            print("Formatted Excel Data:")
-            print(data_to_display)
-
-            # Create a table in the plot
-            ax = plt.subplot(2, 4, 4)  # Top right position
-            ax.axis('off')
-
-            ax.text(0.5, 1.05, "Experimental / Manual results", fontsize=10, ha='center', va='bottom', transform=ax.transAxes)
-
-            # Define headers and row labels based on data shape
-            headers = ['', 'Red', 'Green', 'Blue']
-            if len(data_to_display) == 3:
-                row_labels = ['Manual Cut-off', 'MAX Value', '% of MAX']
-            else:
-                row_labels = ['Manual Cut-off', '% of MAX']
-            
-            # Convert data to strings with proper formatting
-            rows = []
-            for i in range(len(data_to_display)):
-                row = []
-                for val in data_to_display.iloc[i]:
-                    if pd.isna(val):
-                        row.append('')
-                    elif i == 1 and len(data_to_display) == 3:  # MAX values
-                        row.append(f"{val:.1f}")
-                    else:  #% of MAX or when only 2 rows
-                        row.append(f"{val:.2f}")
-                rows.append(row)
-
-            # Insert row labels into the data
-            rows_with_labels = [[label] + row for label, row in zip(row_labels, rows)]
-
-            # Create the table
-            table = ax.table(cellText=rows_with_labels, colLabels=headers, loc='center', cellLoc='center')
-            table.auto_set_font_size(False)
-            table.set_fontsize(8)
-            table.scale(1, 1.5)
-            
-            # Add calculated Li threshold percentages in the bottom right
-            ax_calc = plt.subplot(2, 4, 8)  # Bottom right position
-            ax_calc.axis('off')
-            
-            ax_calc.text(0.5, 1.0, "Li Threshold Results", fontsize=10, ha='center', va='top', 
-                        transform=ax_calc.transAxes, weight='bold')
-            
-            # Create table for calculated results
-            calc_headers = ['', 'Red', 'Green', 'Blue']
-            calc_rows = [
-                ['Li Threshold', f"{red_thresh:.1f}", f"{green_thresh:.1f}", f"{blue_thresh:.1f}"],
-                ['Max Value', f"{red_max:.1f}", f"{green_max:.1f}", f"{blue_max:.1f}"],
-                ['% of Max', f"{red_thresh_pct:.1f}%", f"{green_thresh_pct:.1f}%", f"{blue_thresh_pct:.1f}%"]
-            ]
-            
-            calc_table = ax_calc.table(cellText=calc_rows, colLabels=calc_headers, loc='center', cellLoc='center')
-            calc_table.auto_set_font_size(False)
-            calc_table.set_fontsize(8)
-            calc_table.scale(1, 1.5)
-            
-        except Exception as e:
-            print(f"Error processing Excel data: {str(e)}")
+    # Stack intensities into a single array
+    colors = np.vstack([red_intensities, green_intensities, blue_intensities]).T
     
-    else:
-        print("No Excel file found.")
-        # If no Excel file, still show the calculated results
-        ax_calc = plt.subplot(2, 4, 8)  # Bottom right position
-        ax_calc.axis('off')
-        
-        ax_calc.text(0.5, 1.0, "Li Threshold Results", fontsize=10, ha='center', va='top', 
-                    transform=ax_calc.transAxes, weight='bold')
-        
-        # Create table for calculated results
-        calc_headers = ['', 'Red', 'Green', 'Blue']
-        calc_rows = [
-            ['Li Threshold', f"{red_thresh:.1f}", f"{green_thresh:.1f}", f"{blue_thresh:.1f}"],
-            ['Max Value', f"{red_max:.1f}", f"{green_max:.1f}", f"{blue_max:.1f}"],
-            ['% of Max', f"{red_thresh_pct:.1f}%", f"{green_thresh_pct:.1f}%", f"{blue_thresh_pct:.1f}%"]
-        ]
-        
-        calc_table = ax_calc.table(cellText=calc_rows, colLabels=calc_headers, loc='center', cellLoc='center')
-        calc_table.auto_set_font_size(False)
-        calc_table.set_fontsize(8)
-        calc_table.scale(1, 1.5)
+    # NEW: Maxwell triangle-based color classification
+    print("Starting Maxwell triangle-based color classification...")
+    
+    # 1. Log transform and handle invalid values
+    ll = np.log(colors)
+    ll[np.isnan(ll)] = 0
+    ll[np.isinf(ll)] = 0
+    ll[ll < 0] = 0
 
-    plt.tight_layout()
+    # 2. Compute histogram for density estimation
+    hist, edges = np.histogramdd(ll, bins=101)
 
-    if pdf:
-        print("Saving plot to PDF.")
-        pdf.savefig(fig_thresh, bbox_inches='tight')
-        plt.close(fig_thresh)
-    else:
-        plt.show()
+    # 3. Get bin indices for each dimension
+    bin_indices = np.vstack([
+        np.searchsorted(edges[dim], ll[:, dim], side='right') - 1
+        for dim in range(ll.shape[1])
+    ]).T
 
-    # Classify colors based on thresholding
-    def classify(value, threshold, channel):
-        return channel + '+' if value > threshold else channel
+    # 4. Ensure indices are within valid range
+    for dim in range(bin_indices.shape[1]):
+        bin_indices[:, dim] = np.clip(bin_indices[:, dim], 0, hist.shape[dim] - 1)
 
-    # Apply classification to the DataFrame
-    df['Red'] = df['mean_intensity-0'].apply(classify, args=(red_thresh, 'R'))
-    df['Green'] = df['mean_intensity-1'].apply(classify, args=(green_thresh, 'G'))
-    df['Blue'] = df['mean_intensity-2'].apply(classify, args=(blue_thresh, 'B'))
+    # 5. Retrieve densities using the bin indices
+    densities = hist[tuple(bin_indices.T)]
+    
+    # 6. Select cells with sufficient density (remove outliers)
+    min_density = 0.1  # Adjust as needed
+    selected_cells = densities > min_density
+    
+    # 7. Normalize selected cells
+    selected_colors = colors[selected_cells]
+    selected_cells_normed = selected_colors / np.sum(selected_colors, axis=1)[:, None]
+    selected_cells_normed[np.sum(selected_colors, axis=1) == 0] = 0
 
-    # Color mapping based on classifications
-    color_map = {
-        ('R','G','B'): 'Black',
-        ('R+','G','B'): 'Red',
-        ('R','G+','B'): 'Green',
-        ('R','G','B+'): 'Blue',
-        ('R+','G+','B'): 'Yellow',
-        ('R+','G','B+'): 'Magenta',
-        ('R','G+','B+'): 'Cyan',
-        ('R+','G+','B+'): 'White'
-    }
+    # 8. Unmix RGB values
+    unmixed_colors, unmixing_matrix = unmix_rgb(selected_colors)
+    
+    # 9. Normalize unmixed colors by quantile
+    lower_percentages = 0
+    upper_percentages = [99., 99.7, 99.7]
+    skew_norm = [0, 0]
+    
+    colors_unmixed_quantile, quantiles = normalisation_canal_per_quantile(
+        unmixed_colors,
+        lower_percentages,
+        upper_percentages,
+        channel_axis=1,
+        clip=True,
+        return_quantiles=True,
+        skew_norm=skew_norm
+    )
+    
+    # 10. Remove points on the border of the triangle
+    colors_mask = colors_unmixed_quantile[np.min(colors_unmixed_quantile, axis=-1) > 0]
+    
+    # 11. Convert to Maxwell triangle coordinates
+    xy_coords = rgb_to_maxwell_triangle(*colors_mask.T)
+    xy_coords = np.column_stack(xy_coords)
+    
+    # 12. Cluster using Birch
+    birch = Birch(n_clusters=7, branching_factor=10, threshold=0.05)
+    birch.fit(xy_coords)
+    
+    # 13. Predict clusters for all points
+    birch_predict = birch.predict(xy_coords)
+    
+    # 14. Map clusters to colors based on their position in the Maxwell triangle
+    # Define expected positions of pure colors in Maxwell triangle
+    color_positions = {
+        'Red': (0.5, np.sqrt(3)/2),
+        'Green': (1, 0),
+        'Blue': (0, 0),
+        'Yellow': (0.75, np.sqrt(3)/4),
+        'Magenta': (0.25, np.sqrt(3)/4),
+        'Cyan': (0.5, 0),
+        'White': (0.5, np.sqrt(3)/6)
+        }
 
-    # Assign color category to each cell based on classifications
-    df['Color'] = df.apply(lambda row: color_map.get((row['Red'], row['Green'], row['Blue']), 'Unknown'), axis=1)
+    # Calculate cluster centroids
+    cluster_centroids = {}
+    for cluster_id in range(7):
+        cluster_points = xy_coords[birch_predict == cluster_id]
+        if len(cluster_points) > 0:
+            cluster_centroids[cluster_id] = np.mean(cluster_points, axis=0)
 
-    color_order = ['Red', 'Green', 'Blue', 'Yellow', 'Magenta', 'Cyan', 'White', 'Black']
-    counts = df['Color'].value_counts().reindex(color_order, fill_value=0)
+    # Assign colors based on closest expected position
+    cluster_colors = {}
+    for cluster_id, centroid in cluster_centroids.items():
+        min_dist = float('inf')
+        assigned_color = 'Black'
+        for color, pos in color_positions.items():
+            dist = np.linalg.norm(centroid - pos)
+            if dist < min_dist:
+                min_dist = dist
+                assigned_color = color
+        cluster_colors[cluster_id] = assigned_color
+    
+    # 15. Assign colors to selected cells
+    color_assignments = np.full(len(colors), 'Black')  # Default to black
+    # Create a new mask that combines both selection criteria
+    final_selection_mask = selected_cells.copy()
+    final_selection_mask[selected_cells] = (np.min(colors_unmixed_quantile, axis=-1) > 0)
 
-    # Create figure with subplots for both bar chart and table
-    fig = plt.figure(figsize=(16, 6))  # Increased width to accommodate table
-    gs = fig.add_gridspec(1, 2, width_ratios=[1, 1.5])  # 1:1.5 width ratio
-
-    # Subplot 1: Bar chart
-    ax1 = fig.add_subplot(gs[0])
-    bars = ax1.bar(color_order, counts, color=color_order, edgecolor='black')
-    ax1.set_title("Cell Color Distribution (Eroded Mask + Li Thresholds)")
-    ax1.set_xlabel("Color Category")
-    ax1.set_ylabel("Number of cells")
-    ax1.set_xticks(range(len(color_order)))
-    ax1.set_xticklabels(color_order, rotation=45)
-    ax1.grid(axis='y', alpha=0.3)
-
-    # Add text labels to the bars
-    for bar in bars:
-        height = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width()/2, height + 0.5, 
-                f'{int(height)}', ha='center')
-
-    # Subplot 2: Table for additional Excel data
-    ax2 = fig.add_subplot(gs[1])
-    ax2.axis('off')  # Hide axes for table
-
-    # Extract and display additional Excel data if available
-    if excel_path:
-        try:
-            # Read additional data range (columns C-K, rows 14-15)
-            excel_data = pd.read_excel(excel_path, engine='openpyxl', sheet_name='RGBint_STATs')
-            additional_data = excel_data.iloc[13:15, 2:11]  # Rows 14-15, Columns C-K
-            
-            # Clean and format data
-            formatted_data = []
-            for _, row in additional_data.iterrows():
-                formatted_row = []
-                for val in row:
-                    if pd.isna(val):
-                        formatted_row.append('')
-                    elif isinstance(val, float):
-                        # Format as percentage if value < 1, otherwise as float
-                        if val < 1:
-                            # Multiply by 100 to show as percentage
-                            formatted_row.append(f"{val*100:.1f}%")
-                        else:
-                            formatted_row.append(f"{val:.1f}")
-                    else:
-                        formatted_row.append(str(val))
-                formatted_data.append(formatted_row)
-            
-            # Create table with custom column headers
-            column_headers = ['Total', 'Black', 'White', 'Red', 'Green', 'Blue', 'Yellow', 'Cyan', 'Magenta']
-            
-            table = ax2.table(
-                cellText=formatted_data,
-                colLabels=column_headers,
-                loc='center',
-                cellLoc='center'
-            )
-            
-            # Style table
-            table.auto_set_font_size(False)
-            table.set_fontsize(10)
-            table.scale(1, 1.5)
-            
-            # Add title
-            ax2.set_title("Color proportions - Excel", 
-                         fontsize=12, pad=20)
-            
-            # Highlight header row
-            for i in range(len(column_headers)):
-                cell = table.get_celld()[(0, i)]
-                cell.set_text_props(weight='bold')
-            
-        except Exception as e:
-            error_msg = f"Error reading additional Excel data: {str(e)}"
-            ax2.text(0.5, 0.5, error_msg, ha='center', va='center', color='red')
-            print(error_msg)
-    else:
-        ax2.text(0.5, 0.5, "No Excel file provided for color proportions", 
-                ha='center', va='center', fontsize=12)
-
-    plt.tight_layout()
+    # Assign colors only to cells that passed both filters
+    color_assignments[final_selection_mask] = [cluster_colors.get(cluster, 'Black') for cluster in birch_predict]
+    
+    # 16. Update DataFrame with color assignments
+    df['Color'] = color_assignments
+    
+    # Plot the Maxwell triangle with clustering results
+    fig = plt.figure(figsize=(10, 8))
+    ax = create_maxwell_triangle(
+        xy_coords[:int(len(xy_coords)*0.1)],  # Display only 10% of points for clarity
+        point_alpha=0.5,
+        point_size=5,
+        ax=plt.gca()
+    )
+    
+    # Color points by cluster
+    for cluster_id in range(7):
+        cluster_points = xy_coords[birch_predict == cluster_id]
+        if len(cluster_points) > 0:
+            ax.scatter(
+                cluster_points[:int(len(cluster_points)*0.1), 0],
+                cluster_points[:int(len(cluster_points)*0.1), 1],
+                alpha=0.5,
+                s=5,
+                label=cluster_colors.get(cluster_id, f'Cluster {cluster_id}'),
+                color=cluster_colors.get(cluster_id, 'black').lower()
+                )
+    
+    ax.legend()
+    plt.title(f'Maxwell Triangle with Clustering - {base_name}' if base_name else 'Maxwell Triangle with Clustering')
+    
     if pdf:
         pdf.savefig(fig, bbox_inches='tight')
         plt.close(fig)
     else:
         plt.show()
-
-    # Save the color classified DataFrame to CSV
-    df.to_csv(output_csv_path, index=False)
-
+    
+    # Continue with the rest of the processing (masks, regionprops, etc.)
     image_base = os.path.splitext(os.path.basename(brainbow_path))[0]
     color_masks_folder = os.path.join(os.path.dirname(brainbow_path), f"{image_base}_color_masks")
     os.makedirs(color_masks_folder, exist_ok=True)
@@ -715,7 +679,7 @@ def process_brainbow_image(brainbow_path, label_mask_path, output_csv_path, base
         base_name=image_base
     )
     
-    # NEW: Plot clone size distribution per color
+    # Plot clone size distribution per color
     if regionprops_excel_path:
         # Read the Excel file
         xls = pd.ExcelFile(regionprops_excel_path)
@@ -728,7 +692,6 @@ def process_brainbow_image(brainbow_path, label_mask_path, output_csv_path, base
                     _ = plot_clone_size_distribution_per_color(
                         df_color, color, color_masks_folder, base_name=image_base
                         )
-    
     
     # Save the color classified DataFrame to CSV
     df.to_csv(output_csv_path, index=False)
@@ -750,7 +713,6 @@ def process_brainbow_image(brainbow_path, label_mask_path, output_csv_path, base
         base_name=image_base
     )
     
-    
     # Add plot for color frequency vs clone size
     color_freq_plot_path = plot_color_frequency_vs_clone_size(
         df,
@@ -758,7 +720,6 @@ def process_brainbow_image(brainbow_path, label_mask_path, output_csv_path, base
         color_masks_folder,
         base_name=image_base
     )
-    
     
     percentage_plot_path = plot_percentage_cells_in_clone_bins_per_color(
         regionprops_excel_path,
@@ -902,101 +863,7 @@ def plot_color_distribution_by_area(df, bin_edges=None, bin_labels=None, color_l
     else:
         plt.show()
     return percentage_df
-
-
-
-def plot_maxwell_triangle_projection(df, color_map_display=None, base_name=None, pdf=None):
-    """
-    Plots a Maxwell triangle projection of cells based on their RGB-normalized values.
-
-    Parameters:
-    - df (pd.DataFrame): DataFrame containing cell RGB data and color category information.
-    - color_map_display (dict, optional): A dictionary mapping color names to color values for plotting.
-    
-    Returns:
-    - None: The function plots the Maxwell triangle and outputs the color category counts.
-    """
-    # Normalize RGB values by their total intensity (barycentric coordinates)
-    total_intensity = df[['mean_intensity-0', 'mean_intensity-1', 'mean_intensity-2']].sum(axis=1)
-    
-    # Normalize each channel by the total intensity for RGB
-    df['r_norm'] = df['mean_intensity-0'] / total_intensity
-    df['g_norm'] = df['mean_intensity-1'] / total_intensity
-    df['b_norm'] = df['mean_intensity-2'] / total_intensity
-
-    # Clip any out-of-bounds values (to avoid issues with rounding errors)
-    df['r_norm'] = np.clip(df['r_norm'], 0, 1)
-    df['g_norm'] = np.clip(df['g_norm'], 0, 1)
-    df['b_norm'] = np.clip(df['b_norm'], 0, 1)
-
-    # Define Maxwell triangle vertices (RGB triangle)
-    vertices = np.array([[0, 0],       # Blue at bottom left
-                         [1, 0],       # Red at bottom right
-                         [0.5, 0.866]]) # Green at top center
-
-    # Barycentric projection formula: (r_norm, g_norm, b_norm) -> (x, y) in the triangle
-    x = df['r_norm'] * vertices[1][0] + df['g_norm'] * vertices[2][0] + df['b_norm'] * vertices[0][0]
-    y = df['r_norm'] * vertices[1][1] + df['g_norm'] * vertices[2][1] + df['b_norm'] * vertices[0][1]
-
-    # Use default color_map_display if not provided
-    if color_map_display is None:
-        color_map_display = {
-            'Red': 'red',
-            'Green': 'green',
-            'Blue': 'blue',
-            'Yellow': 'yellow',
-            'Magenta': 'magenta',
-            'Cyan': 'cyan',
-            'White': 'white',
-            'Black': 'black',
-        }
-
-    # Create figure and axis
-    fig, ax = plt.subplots(figsize=(10, 8))
-
-    # Plot the Maxwell triangle
-    triangle = patches.Polygon(vertices, fill=False, edgecolor='black')
-    ax.add_patch(triangle)
-
-    # Plot the points in the Maxwell triangle based on normalized RGB values
-    ax.scatter(x, y, c=df['Color'].map(color_map_display), s=50, alpha=0.7)
-
-    # Label the vertices
-    ax.text(vertices[1][0] + 0.01, vertices[1][1], 'Red', ha='left', va='center', fontsize=12)
-    ax.text(vertices[2][0], vertices[2][1] + 0.01, 'Green', ha='center', va='bottom', fontsize=12)
-    ax.text(vertices[0][0] - 0.01, vertices[0][1], 'Blue', ha='right', va='center', fontsize=12)
-
-    # Optionally, add gridlines from the vertices
-    for i in range(3):
-        mid_x = (vertices[(i+1)%3][0] + vertices[(i+2)%3][0]) / 2
-        mid_y = (vertices[(i+1)%3][1] + vertices[(i+2)%3][1]) / 2
-        ax.plot([vertices[i][0], mid_x], [vertices[i][1], mid_y], 'k-', alpha=0.2)
-
-    # Set equal aspect ratio to prevent distortion
-    ax.set_aspect('equal')
-
-    # Turn off the axis and add a title
-    ax.set_axis_off()
-    plot_title = 'Maxwell Triangle Projection of Cells'
-    if base_name:
-        plot_title += f'\n({base_name})'
-    
-    ax.set_title(plot_title, fontsize=14)
-    
-    # Count the number of cells in each color category
-    color_counts = df['Color'].value_counts()
-
-    # Show the plot
-    plt.tight_layout()
-    if pdf:
-        pdf.savefig(fig, bbox_inches='tight')
-        plt.close(fig)
-    else:
-        plt.show()
-    # Output the color category counts for reference
-    print(color_counts)
-    
-    
+     
     
 def analyze_color_masks_regionprops(brainbow_path, labeled_cells, df, color_masks_folder, brainbow_image):
     """
